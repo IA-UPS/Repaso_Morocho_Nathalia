@@ -1,0 +1,662 @@
+---
+title: "Predicción de la diabetes "
+format: html
+editor: visual
+author: "Nathalia MOrocho - Daniel Andrade"
+---
+
+# Intro
+
+Este sería un ejemplo de examen El siguiente conjunto de datos, consuste en predecir a pacientes basandonos en datos clínicos, si puede padecer diabetes o no.
+
+Antes de cualquier método de clasificación, regresión o lo que sea, necesitamos explorar los datos.
+
+Esto supone exámenes estadísticos inferenciales univariantes, bivariantes y multivariantes.
+
+# Pima Indians Diabetes Database
+
+This dataset is originally from the National Institute of Diabetes and Digestive and Kidney Diseases. The objective of the dataset is to diagnostically predict whether or not a patient has diabetes, based on certain diagnostic measurements included in the dataset. Several constraints were placed on the selection of these instances from a larger database. In particular, all patients here are females at least 21 years old of Pima Indian heritage.
+
+# Cargamos librerias
+
+```{r}
+library(ggplot2) ## Dicha libreria se utiliza para la creacion de graficos.  
+library(dplyr) ## Esta libreria nos ayuda a filtrar, seleccionar y ordenar data frames
+library(caret) ## Esta libreria se utiliza para entrenar y evaluar modelos de learning machine
+library(e1071) ## Esta libreria se utiliza para implementar algoritmos a learning machine. 
+library(ggstatsplot) ## Esta libreria nos ayuda a añadir resumenes estadisticos a los graficos como intervalos de confianza y p valores.
+```
+
+# Cargamos los datos
+
+```{r}
+datos <- read.csv("./datos/diabetes.csv") ## Aqui se lee los datos en formato .csv, y se los guarda en una variable, que en este caso se llama "datos"
+head(datos) ## Aqui se imprime los datos de las 6 primeras filas del data frame de ariba
+```
+
+Si echamos una búsqueda rápida en google, observamos que el pedigree, es eso, la historia familiar de diabetes. Por lo tanto, aquí podríamso hacer varias cosas ! Entre ellas, regresar los datos a dicha función, o clasificar según esta variable, considerarla o no considerarla.
+
+Para empezar vamos a considerarla para ver la clasificación del modelo knn y bayes.
+
+## Miramos las clases de los datos
+
+```{r}
+str(datos) ## Con este comando se puede observar un resumen de data frame, como el nombre de cada variable, el tipo de dato que es.
+```
+
+La única variable que debemos de cambiar es `Outcome` a factor. Donde 1 es diebetes, y 0 es no diabetes
+
+```{r}
+datos$Outcome  <- as.factor(datos$Outcome) ## Aqui se convierte la columna Outcome en un factor, esto se realiza ya que esto es una variable categorica donde el resultado obtenido solo se puede tomar entre 1 y 0, y ya qued en nosotros clasificar como 1 si es diabetes, y 0 no es diabetes 
+```
+
+# Análisis estadístico preliminar
+
+```{r}
+dim(datos) ##nos ayuda a saber cuales son las dimenciones del data frame, siendo el caso que tenemos 768 filas y 9 columnas.
+```
+
+Tenemos 768 filas y 9 columnas. Analicemos primero dos a dos las variables una por una
+
+### Histogramas
+
+```{r}
+
+l.plots <- vector("list",length = ncol(datos)-1) ## se crea una lista vacia con el nombre de l.plots y sus columnas es igual al numero de columnas de datos pero restado 1
+
+n1 <- ncol(datos) -1 ##la variable almacena el numeros de columnas del data frame menos 1
+
+for(j in 1:n1){ ## crea un bucle para j que va desde 1 hasta el valor de n1 
+  
+  h <-hist(datos[,j],plot = F) ## crea un histograma con los valores de j
+  datos.tmp <- data.frame(value=datos[,j],outcome=datos$Outcome) ## Crea un data frame que contiene las columnas de j y outcome
+  
+  p1 <- ggplot(datos.tmp,aes(value,fill=outcome))+geom_histogram(breaks=h$breaks) + ggtitle(paste("Histogram of", colnames(datos)[j])) ## crea un objeto llamado p1 de tipo ggplot que contiene un histograma de la columna j, tiene como titulo "Histograma de" y el nombre de la columna j del dataframe.
+  
+  l.plots[[j]] <- p1 ## Aqui se le agrega un objeto a la lista de l.plots
+}
+
+
+```
+
+```{r}
+l.plots #se visualiza l.plots
+```
+
+En lo particular la variable del pedigree se me hace importante, entonces vamos a realizar gráficos de dispersión
+
+En realidad, una buena práctica es correlacionar todas contra todas...
+
+```{r}
+ggscatterstats(datos,BMI,DiabetesPedigreeFunction) ## se crea un grafico de dispersion de las columnas del dataframe, con dato que se indican en el argumoento.  
+```
+
+Sin embargo, esto puede ser un proceso tedioso... imaginad hacer 16 gráficas ! podemos condersarlo todo
+
+```{r}
+obj.cor <- psych::corr.test(datos[,1:n1]) ## Aqui se realiza el calculo de la matriz de correlacion para el dataframe de datos, y se obtiene el coeficiente de correlacion como tambien el valor p.
+p.values <- obj.cor$p ## Se almacena los valores p de una funcion corr.test en la variable llamada p.values
+
+p.values[upper.tri(p.values)] <- obj.cor$p.adj
+## Se reemplaza los p valores en el triangulo superior del vector p.values, ademas estos valores son calculados con el metodo Benjamini Hochberg
+
+p.values[lower.tri(p.values)] <- obj.cor$p.adj
+## se reemplaza los valores en el triangulo inferior de la variable vector p.values
+
+diag(p.values) <- 1
+## Hace que los elementos diagonales de p.value sean 1, de tal manera que no se muestran los elementos diagonales del correlograma
+
+corrplot::corrplot(corr = obj.cor$r,p.mat = p.values,sig.level = 0.05,insig = "label_sig")
+## Aqui se crea el correlogramade la matriz de correlacion, ademas la funcion corrplot() toma la matriz correlacionada, los valores py el nivel de significancia como entrada y crea un correlograma, y por ultimo el comndo insig se utiliza para especifica como se deben mostrar las correlaciones insignificantes. en este caso se las muestra como etiquetas.
+```
+
+Ahora podemos proceder a hacer algo similar, con una serie de comparaciones dos a dos sobre las medias o medianas, sobre cada variable y la variable de interés.
+
+Primero debemos aplicar una regresión linear con variable dependiente cada variable numérica y por la categórica. Es decir un t.test pero con el fin de ver los residuos, para ver la normalidad de éstos
+
+```{r}
+## Aqui se aplicara el test de shapiro-Wilk en los residuos de un modelo de regresion lineal, para cada variable del dataframede datos, y para ello se utiliza apply, ademas para poder observar el resumen del modelo de regresion lineal se utiliza el summary, y por ultimo usamos residuals para obtener los residuos de un modelo de regresion. 
+p.norm <- apply(apply(datos[,1:n1],
+            2, ## La regresion se aplica a cada columna
+            function(x) summary(lm(x~datos$Outcome))$residuals),
+      2,
+      shapiro.test)
+
+p.norm ## nos visualiza los valores que contiene la variable p.norm
+```
+
+Todas las variables son no normales, tal como vemos en los histogramas.
+
+```{r}
+ggbetweenstats(datos,Outcome,Pregnancies,type = "nonparametric")
+## Se crea un grafico estadistico que muestra la relacion entre las variables pregnacies y outcome en el dataframe de datos.
+## La grafica de violin que nos permite visualizar la distribucion de la variable outcome para cada nivel de la variale Pregnancy, podemos ver que la densidad de los datos sea mayor para las personas con menos embarazos.
+```
+
+```{r}
+ggbetweenstats(datos,Outcome,Glucose,type = "nonparametric")
+## Se crea un grafico estadistico donde se relaciona las variables outcome y glucosa en el dataframe de datos. Ademas la grafica de violin que nos permite visualizar la distribucion de la variable Glucosa es mas amplia para 1 que para 0
+```
+
+```{r}
+ggbetweenstats(datos,Outcome,BloodPressure,type = "nonparametric")
+## Se crea un grafico estadistico que muestra la relacion entre las variables outcome y presion arterial en el data frame.
+## grafica de violin nos ayuda a visualizar la distribucion de la variable BloodPressure con el outcome. 
+```
+
+```{r}
+ggbetweenstats(datos,Outcome,Insulin,type = "nonparametric")
+## Se crea un grafico estadistico que muestra la relacion entre las variables outcome y la insulina en el data frame.
+## grafica de violin nos ayuda a visualizar la distribucion de la variable Insulin con el outcome. 
+```
+
+```{r}
+ggbetweenstats(datos,Outcome,BMI,type = "nonparametric")
+## Se crea un grafico estadistico que muestra la relacion entre las variables outcome y el indice de masa corporal en el data frame.
+## grafica de violin nos ayuda a visualizar la distribucion de la variable BMI con el outcome. 
+```
+
+```{r}
+ggbetweenstats(datos,Outcome,DiabetesPedigreeFunction,type = "nonparametric")
+## Se crea un grafico estadistico que muestra la relacion entre las variables outcome y DiabetesPedigreeFunction en el data frame.
+## grafica de violin nos ayuda a visualizar la distribucion de la variable DiabetesPedigreeFunction con el outcome.
+```
+
+```{r}
+ggbetweenstats(datos,Outcome,Age,type = "nonparametric")
+```
+
+### PCA
+
+```{r}
+summary(datos) ## Para obtener un resumen de datos con numero de observaciones, numero de variables , tipo de datos en cada variable
+pcx <- prcomp(datos[,1:n1],scale. = F) ## Se realiza un analisis de los componentes principales (PCA) en las variables n1variables de datos. 
+plotpca <- bind_cols(pcx$x,outcome=datos$Outcome) ## Se genera un dataframe con nombre plotpca que contiene las puntuaciones del componenete principal de PCA y la variable Outcome de los datos.
+ggplot(plotpca,aes(PC1,PC2,color=outcome))+geom_point()
+## se crea un diagrama de dispercion para los componentes principales de PCA coloreadas por outcome.
+```
+
+Ahora vamos a ver si haciendo unas transformaciones esto cambia. Pero antes debemos de ver las variables sospechosas...
+
+Pero de igual manera podemos escalar a ver si hay algun cambio...
+
+```{r}
+summary(datos) ## realiza un resumen de dataframe de los datos. 
+pcx <- prcomp(datos[,1:n1],scale. = T) ## escalamos por la variablidad de los datos
+
+plotpca <- bind_cols(pcx$x,outcome=datos$Outcome) ## se crea un nuevo dataframe en donde contiene las puntuciones de los componenetes principales de PCAy la variable Outcome de datos 
+ggplot(plotpca,aes(PC1,PC2,color=outcome))+geom_point() 
+## Se crea un diagrama de dispersion de las puntuaciones de los componenetes principales de PCA coloreadas por outcome
+```
+
+```{r}
+factoextra::fviz_contrib(pcx,"var")
+## Se crea un grafico de brras de la contribucion de cada variable de pcx
+```
+
+Al parecer es la insulina la que está dando problemas
+
+```{r}
+## indices a quitar
+w <- c(grep("insulin",ignore.case = T,colnames(datos)),ncol(datos))
+pcx <- prcomp(datos[,-w],scale. = F) ## escalamos por la variablidad de los datos
+
+plotpca <- bind_cols(pcx$x,outcome=datos$Outcome)
+## se crea un nuevo dataframe en donde contiene las puntuciones de los componenetes principales de PCAy la variable Outcome de datos
+ggplot(plotpca,aes(PC1,PC2,color=outcome))+geom_point()
+## Se crea un diagrama de dispersion de las puntuaciones de los componenetes principales de PCA coloreadas por outcome
+```
+
+De hecho la insulina, tenía un aspecto raro, como sesgado, ver gráficos de arriba. Vamos a transformala...
+
+```{r}
+datos$Insulin  <- log(datos$Insulin+0.05)
+## se aplica la funcion log() para agregar a la columna de insulin 0.05 valores paraa que se transforme los datos a una distribucion mas normal
+summary(datos) ## resumen del dataframe
+pcx <- prcomp(datos[,1:n1],scale. = T) ## escalamos por la variablidad de los datos
+
+plotpca <- bind_cols(pcx$x,outcome=datos$Outcome) 
+## se crea un nuevo marco de datos llamado plotpca que contiene los dos primeros componeentes principales del pca asi como tambien los datoa de outcome del dataframe, ademas se esta utilizando la funcion bind_cols() que sirve para para combinar los dos primeros componentes principales del PCA con la variable de resultados del marco de datos.  
+ggplot(plotpca,aes(PC1,PC2,color=outcome))+geom_point()
+## Realiza un diagrama de dispercion con lo datos de plotpca con las variables outcome representadas por el color de los puntos, ademas se utiliza la funcion aes para especificar asignaciones para el diagrama de dispercion, luego estan las variables PC1 y PC2 estas asignan a los ejes x e y osea posiciones.
+```
+
+Cambia ! Esto significa que no hemos quitado la infromacion de la insulina, solamente lo hemos transformado
+
+Es decir, cambia si transformamos los datos...a partir de esto, podemos realizar de nuevo pruebas de diferencia de medianas, pero ahora lo veremos condensado..
+
+```{r}
+datos <- read.csv("./datos/diabetes.csv") ## Se lee los archivos
+datos$Outcome <- as.factor(datos$Outcome) ##la variable outcome se conviete en un factor pasandolo a un indicador 
+datsc <- scale(datos[,-ncol(datos)]) ## escala los datos del dataframe exepto la variable outcome.
+```
+
+Veamos las distribuciones de nuevo....
+
+```{r}
+l.plots <- vector("list",length = ncol(datos)-1)
+n1 <- ncol(datos) -1
+for(j in 1:n1){
+  ## se crea un vector llamado l,plots y se almacenara los histogrmas, teniendo una longuitud igual al dataframe de datos menos uno, luego en las demas se hace un proceso que se explico anteriormente
+  
+  h <-hist(datos[,j],plot = F) ## Se crea un histograma de los valores de dataframe en las columnas especificadas por el valor j.
+  datos.tmp <- data.frame(value=datos[,j],outcome=datos$Outcome)
+  ## Se realiza un marco de datos llaamod datos.tmpque contiene valores que se utilizaran para la columna especificada por f.
+  p1 <- ggplot(datos.tmp,aes(value,fill=outcome))+geom_histogram(breaks=h$breaks) + ggtitle(paste("Histogram of", colnames(datos)[j]))
+  ## Aqui se le esta personalizando el objeto que a la vez se esta creando con la funcion de ggplot,ademas como se menciono antes, esta linea de codigo tiene la funcion de personalizar la grafica, dando colores a la misma, o nombres a cada columna, ademas de agregar el histograma.  
+  l.plots[[j]] <- p1 ## se agrega el objeto ggplot p1 a la lista l.plot
+}
+l.plots ## se muestra l.plots
+```
+
+Curioso, los valores la insulina, han cambiado por la transformación en valor mas no la distribución, vamos a hacer unos arrelgos...
+
+Al parecer la preñanza esta ligada a una esgala logaritmica de 2 Esto es otra cosa...
+
+```{r}
+datos <- read.csv("./datos/diabetes.csv")
+datos$Outcome <- as.factor(datos$Outcome) ## Convertimos las variables a factores haceindo que sean binarios 
+datos$Pregnancies  <- log(datos$Pregnancies+0.5)
+## se aplica un logaritmos a la variable (Pregnancies), mas 0.5 a los valores tomados
+ggplot(datos,aes(Pregnancies))+geom_histogram(breaks = hist(datos$Pregnancies,plot=F)$breaks)
+## Crea un histograma de la variable Pregnancies usando las funciones vista en la linea de codigo.
+```
+
+Realizaremos lo mismo con la grosura de la piel
+
+```{r}
+datos <- read.csv("./datos/diabetes.csv") ## se lee los archivos
+datos$Outcome <- as.factor(datos$Outcome) ## Convertimos las variables a factores haceindo que sean binarios para obtener si tiene diabetes o no
+datos$SkinThickness  <- log(datos$SkinThickness+0.5) ## se aplica un logaritmos a la variable (Skinthinckness), mas 0.5 a los valores tomados
+ggplot(datos,aes(SkinThickness))+geom_histogram(breaks = hist(datos$SkinThickness,plot=F)$breaks)## Crea un histograma de la variable SkinThickness usando las funciones vista en la linea de codigo.
+```
+
+Tenemos algo raro, lo más posible sea por la obesidad...
+
+```{r}
+ggscatterstats(datos,SkinThickness,BMI) 
+## Se crea una diagrama de dispersion con la informacion de interes relacionando skinthickness, BMI y datos.
+```
+
+Curioso ! al parecer los datos tienen valores nulos, los cuales solo están en las otras variables que no sean pregnancies. Vamos a quitarlos...
+
+```{r}
+datos <- read.csv("./datos/diabetes.csv") ## Se realiza la lectura de los datos
+datos[,-c(1,9)] <- apply(datos[,-c(1,9)],2,function(x) ifelse(x==0,NA,x))## se remplazao todos lo valores que contengan un 0 en el marco de datos con valores de NA. y esto se realiza con el fin de eliminar las filas que contiene solo cerospues no son utiles almenos para este proceso.
+
+datos$Outcome <- as.factor(datos$Outcome)
+## Se convierte la variable outcome en un factor, pasandolo a binario.
+```
+
+### vamos a quitar estos valores
+
+```{r}
+datos <- datos[complete.cases(datos),]
+## Aqui la funcion complete.case() hace que devuelva un vector logico el cual indica si cada fila en el marco de datos contiene todos los valores que no faltan.
+```
+
+Se redujo el data set a 392 observaciones...
+
+```{r}
+table(datos$Outcome)
+## aqui da una tabla con los valores unico en el vactor, siendo que va a tomar valores binarios gracias a la variable outcome
+```
+
+```{r}
+
+l.plots <- vector("list",length = ncol(datos)-1)
+n1 <- ncol(datos) -1
+for(j in 1:n1){
+  ## Se crea una lista en la que se alamcenara los histogramas ,  y este tendra un elemento por cada variable del dataframe de datos, exepto por la variable outcome, ademas tambien se hace un bucle para los valores de j
+  
+  h <-hist(datos[,j],plot = F)
+  ## se realiza un histograma con los valores de la variable datos[,j]
+  datos.tmp <- data.frame(value=datos[,j],outcome=datos$Outcome)
+  p1 <- ggplot(datos.tmp,aes(value,fill=outcome))+geom_histogram(breaks=h$breaks) + ggtitle(paste("Histogram of", colnames(datos)[j]))
+  ## se crea un objeto gracias a la funcion de ggplot, ademas en esta linea de codigo se especifica el color de relleno, se agrega un histograma al objetoy se agrega un titulo.
+  
+  
+  l.plots[[j]] <- p1 ## se almacena el valor p1 a la lista l.plots
+}
+l.plots ## se muestra l.plots
+```
+
+Ahora si podemos realizar las transfomraciones
+
+```{r}
+datos <- read.csv("./datos/diabetes.csv") ## se lee los archivos
+datos[,-c(1,9)] <- apply(datos[,-c(1,9)],2,function(x) ifelse(x==0,NA,x))
+## aqui se reemplaza todos los valores que sean ceros por valores NA
+datos <- datos[complete.cases(datos),]
+## Elimina filas que contengan valores que no esten presentes
+
+datos$Outcome <- as.factor(datos$Outcome)
+## Convierte la variable Putcome a un factor 
+datos$Insulin <- log(datos$Insulin)
+## Hace el logaritmo natural de la variable insulin
+
+datos$Pregnancies <- log(datos$Pregnancies+0.5)
+## Hace el logaritmo natural de la variable insulin Pregnancies+ 0.5 de eso valores
+
+datos$DiabetesPedigreeFunction <- log(datos$DiabetesPedigreeFunction)
+## Hace el logaritmo natural de la variable DiabetesPedigreeFunction 
+
+datos$SkinThickness <- sqrt((datos$SkinThickness))
+datos$Glucose <- log(datos$Glucose)
+datos$Age <-log2(datos$Age)
+l.plots <- vector("list",length = ncol(datos)-1)
+n1 <- ncol(datos) -1
+for(j in 1:n1){
+  
+  h <-hist(datos[,j],plot = F)
+  datos.tmp <- data.frame(value=datos[,j],outcome=datos$Outcome)
+  p1 <- ggplot(datos.tmp,aes(value,fill=outcome))+geom_histogram(breaks=h$breaks) + ggtitle(paste("Histogram of", colnames(datos)[j]))
+  ## se realiza el mismo proceso que se explico anteriormente, como el de personalizar el objeto creado, ponerle un nombre etc.
+  l.plots[[j]] <- p1
+}
+l.plots ## se muestra el l,plots
+```
+
+Con las anteriores transformaciones vamos a realizar el PCA de nuevo.
+
+```{r}
+summary(datos) ## nos da el resumen del dataframe
+pcx <- prcomp(datos[,1:n1],scale. = T) ## escalamos por la variablidad de los datos
+
+plotpca <- bind_cols(pcx$x,outcome=datos$Outcome)
+## se crea un mrco dde datos plotpca que conteinen las puntuaciones de los componentes principales y la variable resultados
+ggplot(plotpca,aes(PC1,PC2,color=outcome))+geom_point()
+## se crea un grafico de dispersion de las puntuaciones principlaes coloreadas por la variable resultado. 
+```
+
+Ahora vamos a realizar las pruebas de medianas
+
+```{r}
+p.norm <- apply(apply(scale(datos[,1:n1]),## realiza una escalada en el marco de datos.
+            2,
+            function(x) summary(lm(x~datos$Outcome))$residuals),
+      2,  ## Hace una regrecion lineal a las variables Outcome
+      shapiro.test)## Realiza la prueba de normalidad shapiro-wilk en los residuos de cada modelode la regresion linel
+
+p.norm ## Almaena los valores en un vector p.norm
+```
+
+Hemos conseguido la normalidad en solo dos variables, si fueran mas procederiamos con t test pero como no es asi, con test de Wilcoxon
+
+```{r}
+p.norm <- apply(scale(datos[,1:n1]),
+            2,
+            function(x) wilcox.test(x~datos$Outcome)$p.value)
+## Aqui se realiza una prueba de suma de rangos de wilcoxon para cada variable escalada contra la variable Outcoe, ademas guaarda esos valores p en un vector.
+```
+
+Observamos que en una primera instancia ahora todas tienen diferencias significativas, esto tenemos que corregir.
+
+```{r}
+p.adj <- p.adjust(p.norm,"BH") ## Realiza el ajuste de Benjamini-Hochberg, sobre los valores pque contiene la variable p.norm y guarda esos valores ajustados a un vector p.adj
+```
+
+Todas siguen siendo significativas, ahora vamos a ver cuales aumentan o disminyuen respecto las otras
+
+```{r}
+datos.split <- split(datos,datos$Outcome) ## Aqui se divide el marco de datos en dos grupos, ya que uno de eso grupo se utilizara para la variabe outcome 
+
+datos.median <- lapply(datos.split, function(x) apply(x[,-ncol(x)],2,median))
+## Calcula la mediana de cada variable de grupo.
+
+toplot <- data.frame(medianas=Reduce("-",datos.median)
+,p.values=p.adj) 
+## Realiza una grafiaca del marco de datos donde contiene la medianas de las variables y losvalores p.
+
+toplot
+```
+
+Ahora Todos los valores son significativos respecto a la obesidad
+
+```{r}
+obj.cor <- psych::corr.test(datos[,1:n1]) ## HAce la prueba de correlacion sobre las variables en el dataframe.
+p.values <- obj.cor$p  ## Se almacena valores pen un vector p.values
+p.values[upper.tri(p.values)] <- obj.cor$p.adj 
+p.values[lower.tri(p.values)] <- obj.cor$p.adj
+diag(p.values) <- 1 ## Hace que los elementos diagonales sean 1
+corrplot::corrplot(corr = obj.cor$r,p.mat = p.values,sig.level = 0.05,insig = "label_sig")
+## Crea un grafico de correlacion de las variables en el data frameademas los valores p se muestran como estrellas junto a los coeficientes de correlacion. y esto se hace para denotar la importancia de estos coeficiente de correlacion. 
+```
+
+También podemos observar como cambian las relaciones segun la diabetes
+
+```{r}
+obj.cor <- psych::corr.test(datos[datos$Outcome==0,1:n1])
+## Aqui se realiza una prueba de correlacion en las variables del marco de datos donde la variable resultado es igual a 0
+p.values <- obj.cor$p ## Aqui se almacenan los valores de la correlacion en una variable
+p.values[upper.tri(p.values)] <- obj.cor$p.adj
+p.values[lower.tri(p.values)] <- obj.cor$p.adj
+diag(p.values) <- 1
+ ## Se establecen los valores en las diagonales igual a 1 
+corrplot::corrplot(corr = obj.cor$r,p.mat = p.values,sig.level = 0.05,insig = "label_sig")
+## Se crea un grafio de correlacion de las variables como se indico anteriormente.
+```
+
+```{r}
+obj.cor <- psych::corr.test(datos[datos$Outcome==1,1:n1])
+## Aqui se realiza una prueba de correlacion en las variables del marco de datos donde la variable resultado es igual a 1
+p.values <- obj.cor$p ## Aqui se almacenan los valores de la correlacion en una variable
+p.values[upper.tri(p.values)] <- obj.cor$p.adj
+p.values[lower.tri(p.values)] <- obj.cor$p.adj
+diag(p.values) <- 1## Se establecen los valores en las diagonales igual a 1 
+corrplot::corrplot(corr = obj.cor$r,p.mat = p.values,sig.level = 0.05,insig = "label_sig") ## Aqui se repite lo mismo de lo anterior, pus se crea un grafico de las variables de correlacion.
+```
+
+Es decir, existen correlaciones únicas de la obesidad y no obesidad, y existen otras correlaciones que son debidas a otros factores.
+
+# Particion de datos
+
+```{r}
+datos[,1:n1] <- as.data.frame(scale(datos[,-ncol(datos)])) ## Se escala las variablesen el marco de datos.
+levels(datos$Outcome) <- c("D","N") ## Se convierte el outome en un factor con dos niveles D y N
+train <- sample(nrow(datos),size = nrow(datos)*0.7) ## Crea un conjunto de entrenamientos ademas de un conjunto de pruebas a partir del dataframe, este conjunto de entrenamiento contiene el 70% de los datos y el 30% restante el conjunto de la prubas 
+
+dat.train <- datos[train,]
+dat.test <- datos[-train,]
+```
+
+# Modelado
+
+```{r}
+datos[,1:n1] <- as.data.frame(scale(datos[,-ncol(datos)]))## se escala las variables en el arco de datos. 
+
+glm.mod <- glm(Outcome ~.,data=dat.train,family = "binomial")## se ajusta el modelo de regresion logistica al cojunto de entrenamientos
+
+prediccion <- as.factor(ifelse(predict(glm.mod,dat.test,type="response")>=0.5,"N","D")) ## realiza las predicciones sobre el conjunto de prueba
+
+caret::confusionMatrix(prediccion,dat.test$Outcome) ## evalua el rendimiento del modelo con una matriz de confusion.
+```
+
+LASSO
+
+```{r}
+tuneGrid=expand.grid( ## se crea una cuadricula de los valora de hiperoparametors para buscar ademas de que a continuacion se crea un objeto que controle el entrenamiento que se especifica.
+              .alpha=0,
+              .lambda=seq(0, 1, by = 0.001))
+trainControl <- trainControl(method = "repeatedcv",
+                       number = 10,
+                       repeats = 3,
+                       # prSummary needs calculated class,
+                       classProbs = T)
+
+model <- train(Outcome ~ ., data = dat.train, method = "glmnet", trControl = trainControl,tuneGrid=tuneGrid, ## luego se ajusta el modelo de regresion logistica cancelando al conjunto de entrenamiento con la utilizacion de la cuadrilla antes mencionada y el objeto de control de entrenamiento.
+                                      metric="Accuracy"
+)
+
+confusionMatrix(predict(model,dat.test[,-ncol(dat.test)]),dat.test$Outcome) ## aqui se evalua el rendimiento del modelo utilizando una matriz de confucion.
+```
+
+```{r}
+tuneGrid=expand.grid(
+              .alpha=1,
+              .lambda=seq(0, 1, by = 0.0001)) ##aqui se vuelve a crear una cuadicula para los valores de hiperparametros.
+trainControl <- trainControl(method = "repeatedcv",
+                       number = 10,
+                       repeats = 3,
+                       # prSummary needs calculated class,
+                       classProbs = T) 
+## se crea un objeto de control de entrenamientoque especifica el procedimiento de validacion 
+
+model <- train(Outcome ~ ., data = dat.train, method = "glmnet", trControl = trainControl,tuneGrid=tuneGrid,
+                                      metric="Accuracy"
+)
+## aqui sse ajusta el modelo de regrecion logistica para hacer el cancelamiento de entrenamiento haciendo uso de la cuadricula de valores de hiperparametros conjuntamente con el control de entrenamientos.
+confusionMatrix(predict(model,dat.test[,-ncol(dat.test)]),dat.test$Outcome)
+```
+
+```{r}
+datos[,1:n1] <- as.data.frame(scale(datos[,-ncol(datos)])) ## se convierte los datos del resultado de la funcion scale. en un dataframedando como consecuente que las variables estaran centradas alrededor de 0 y en 1 se hara uan desviacion estandar. 
+levels(datos$Outcome) <- c("D","N") ## aqui se establece los niveles de la variable llamada resultado, puesto que la variable outcome puee tener varios nivles al ser una variable factorial, entinces se los limita en tal caso seria D y N
+train <- sample(nrow(datos),size = nrow(datos)*0.7)
+## aqui se selecionara el 70% de las filas para el conjunto de entrenamiento
+
+dat.train <- datos[train,]
+dat.test <- datos[-train,]
+mdl <- naiveBayes(Outcome ~ .,data=dat.train,laplace = 0)
+## Aqui se ajusta el modelo de bayes al conjunto de entrenamiento ademas de que no se utilizara el suavizado de laplace ya que se lo establece en 0
+prediccion <-predict(mdl,dat.test[,-ncol(dat.test)])
+## Se predice el conjunto de pruebas, seleccionado las columnas del data frame del dat.test que no son variables de outcome 
+confusionMatrix(prediccion,dat.test$Outcome)
+```
+
+```{r}
+lambda_use <- min(model$finalModel$lambda[model$finalModel$lambda >= model$bestTune$lambda])
+position <- which(model$finalModel$lambda == lambda_use)
+featsele <- data.frame(coef(model$finalModel)[, position])
+## Aqui se se realiza el minimo para sacar lo valores mas pequeños del vectos mientras se compaa entre si es igual o mayor que la otra variable, finalizando en la convercion de los coeficientes en un marco de datos.
+```
+
+```{r}
+## Aqui contiene coeficientes distintos a cero, siendo que la salida del codigo es un vector que contiene nombres de las caracteristicas que son las mas importantes del modelo.
+rownames(featsele)[featsele$coef.model.finalModel....position.!=0]
+```
+
+```{r}
+mdl.sel <-naiveBayes(Outcome ~ Insulin+Glucose+DiabetesPedigreeFunction+Age,data = dat.train)
+## Se ajusta este modelo al training, a la varaible outcome  dependiente y a otras independientes 
+prediccion <- predict(mdl.sel,dat.test[,-ncol(dat.test)])
+## Se hace las predicciones al conjunto de pruebas.
+confusionMatrix(prediccion,dat.test$Outcome)
+```
+
+```{r}
+library(ISLR) ## Esta libreria contiene el conjunto de datos dat.train que se va a utilizar para entrenar el modelo
+library(caret) ## se utiliza esta libreria para el entrenamiendo train()
+set.seed(400) ## Aqui se esta poniendo una semilla para que los valores no sean aleatorios
+ctrl <- trainControl(method="repeatedcv",repeats = 3) #,classProbs=TRUE,summaryFunction = twoClassSummary)
+
+## Aqui se va va validar de forma cruzada 10 veces con 3 pliegues cada uno, y la validacion cruzada se repetira 3 veces.  
+
+knnFit <- train(Outcome ~ ., data = dat.train, method = "knn", trControl = ctrl, preProcess = c("center","scale"), tuneLength = 50) ## Se ajusta el modelo knn a las variables
+
+#Output of kNN fit
+knnFit ## el objeto knnse muetra 
+```
+
+```{r}
+plot(knnFit) ## muestra los valores de knnfit
+
+```
+
+```{r}
+knnPredict <- predict(knnFit,newdata = dat.test[,-ncol(dat.test)] )
+## Aqui se esta realizando una prediccion al conjunto de prueba
+#Get the confusion matrix to see accuracy value and other parameter values
+confusionMatrix(knnPredict, dat.test$Outcome )
+```
+
+```{r}
+library(caret)
+datos <- read.csv("./datos/diabetes.csv") ## leemos los datos
+datos$Outcome <-as.factor(datos$Outcome) ## Convertir en factor la salida de outcome 
+datos[,1:n1] <- as.data.frame(scale(datos[,-ncol(datos)]))
+levels(datos$Outcome) <- c("D","N")
+## se cambia los niveles de la variable outcome que en este caso es D y N
+train <- sample(nrow(datos),size = nrow(datos)*0.7)
+## aqui se selecciona aleatoriamente el 70% de los datos para el conjunto de entrenamientos
+dat.train <- datos[train,]
+dat.test <- datos[-train,]
+set.seed(1001) 
+ctrl<-trainControl(method="repeatedcv",number=10,classProbs = TRUE,summaryFunction = twoClassSummary) 
+## El objeto ctrl se crea al utilizar la funcion trainControl siendo el argumento del metodo que establece repeatedcv, lo que da a entender es que el modelo se va avalidar 10 veces en los 3 pliegues de cada uno.
+plsda<-train(x=dat.train[,-ncol(datos)], # spectral data
+              y=dat.train$Outcome, # factor vector
+              method="pls", # pls-da algorithm
+              tuneLength=10, # number of components
+              trControl=ctrl, # ctrl contained cross-validation option
+              preProc=c("center","scale"), # the data are centered and scaled
+              metric="ROC") # metric is ROC for 2 classes
+plsda
+prediccion <- predict(plsda,newdata = dat.test[,-ncol(datos)])
+
+confusionMatrix(prediccion,dat.test$Outcome)
+```
+
+Si tuneamos lambda
+
+```{r}
+datos <- read.csv("./datos/diabetes.csv") ## se lee los datos 
+datos$Outcome <-as.factor(datos$Outcome) ## se convierte en un factor l salidad de outcome
+levels(datos$Outcome) <- c("D","N")
+## se cambia los niveles de la variable outcome que en este caso es D y N
+train <- sample(nrow(datos),size = nrow(datos)*0.7)
+## aqui se selecciona aleatoriamente el 70% de los datos para el conjunto de entrenamientos
+dat.train <- datos[train,]
+dat.test <- datos[-train,]
+lambda <- seq(0,50,0.1)
+  ## El vector lambda se crea para lamacenar los parametros de rla regularizacion
+  modelo <- naiveBayes(dat.train[,-ncol(datos)],dat.train$Outcome)
+## Aqui la funcion naivebayes se utiliza para poder ajustar un modelo bayesiano al conjunto de entrenamiento.
+  predicciones <- predict(modelo,dat.test[,-ncol(datos)])
+  
+confusionMatrix(predicciones,dat.test$Outcome)$overall[1]
+
+
+
+```
+
+```{r}
+
+datos <- read.csv("./datos/diabetes.csv")
+datos$Outcome <-as.factor(datos$Outcome)
+datos[,1:n1] <- as.data.frame(scale(datos[,-ncol(datos)]))
+levels(datos$Outcome) <- c("D","N")
+train <- sample(nrow(datos),size = nrow(datos)*0.7)
+
+dat.train <- datos[train,]
+dat.test <- datos[-train,]
+library(caret)
+set.seed(1001) 
+ctrl<-trainControl(method="repeatedcv",number=10,classProbs = TRUE,summaryFunction = twoClassSummary) 
+plsda<-train(x=dat.train[,c(2,5,7,8)], # spectral data
+              y=dat.train$Outcome, # factor vector
+              method="pls", # pls-da algorithm
+              tuneLength=10, # number of components
+              trControl=ctrl, # ctrl contained cross-validation option
+              preProc=c("center","scale"), # the data are centered and scaled
+              metric="ROC") # metric is ROC for 2 classes
+
+prediccion <- predict(plsda,dat.test[,c(2,5,7,8)])
+confusionMatrix(prediccion,dat.test$Outcome)
+```
+
+Finalmente podríamos hacer un análisis de la varianza multivariante
+
+```{r}
+library(vegan)
+
+adonis2(datos[,-ncol(datos)] ~datos$Outcome,method = "euclidean")
+```
+
+Es decir, como conlusión aunque las variables no pueden detectar la diabetes, siendo variables independientes, si por otro lado las consideramos dependientes de la diabetes.
+
+Es decir, la diabetes es una condición en la que influye en los parámetros, mientras que es menos probable que la diabetes sea la causa de estas alteraciones, con una mejor precisón del 77 por ciento.
+
+Es decir, por un lado tenemos las variables que nos explican solo un 77 porciento de la diabetes, mientras que la condición en sí nos separa más entre la media global.
+
+Se podría investigar más esto. Por ejemplo, se podría hacer una correlación parcial, dada la diabetes, e identificar aquellas variables especificamente relacionadas con esta.
